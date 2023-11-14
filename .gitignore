@@ -21,3 +21,4 @@
 go.work
 villus
 villus.exe
+*.o
