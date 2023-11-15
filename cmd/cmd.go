@@ -43,11 +43,30 @@ var listcmd = &cobra.Command{
 	Run:   listcmdFunc,
 }
 
+var tcpcmd = &cobra.Command{
+	Use:   "tcp",
+	Short: "show version",
+	Run:   tcpcmdFunc,
+}
+
+var gotlscmd = &cobra.Command{
+	Use:   "gotls",
+	Short: "show version",
+	Run:   tcpcmdFunc,
+}
+
+var tlscmd = &cobra.Command{
+	Use:   "tls",
+	Short: "show version",
+	Run:   tcpcmdFunc,
+}
+
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(listcmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(rmcmd)
+	rootCmd.AddCommand(tcpcmd)
 }
 
 func Execute() {
@@ -89,4 +108,13 @@ func versionCommandFunc(command *cobra.Command, args []string) {
 		fmt.Println(err)
 	}
 	select {}
+}
+
+func tcpcmdFunc(command *cobra.Command, args []string) {
+	fmt.Println("tcp")
+	err := user.AttachTcpKprobe()
+	if err != nil {
+		fmt.Println(err)
+	}
+
 }
