@@ -61,12 +61,20 @@ var tlscmd = &cobra.Command{
 	Run:   tcpcmdFunc,
 }
 
+var httpcmd = &cobra.Command{
+	Use:   "http",
+	Short: "show version",
+	Run:   httpcmdFunc,
+}
+
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(listcmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(rmcmd)
 	rootCmd.AddCommand(tcpcmd)
+	rootCmd.AddCommand(tlscmd)
+	rootCmd.AddCommand(httpcmd)
 }
 
 func Execute() {
@@ -111,8 +119,17 @@ func versionCommandFunc(command *cobra.Command, args []string) {
 }
 
 func tcpcmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("tcp")
-	err := user.AttachTcpKprobe()
+	fmt.Println("tls")
+	err := user.AttachSSLUprobe()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+}
+
+func httpcmdFunc(command *cobra.Command, args []string) {
+	fmt.Println("http")
+	err := user.AttachSocket()
 	if err != nil {
 		fmt.Println(err)
 	}

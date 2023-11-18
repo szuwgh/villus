@@ -1,20 +1,13 @@
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -strip llvm-strip-12 -cflags "-O2 -g -Wall -Werror" -target native bpf ../bpf/net/net.c -- -I../bpf/headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -strip llvm-strip-12 -cflags "-O2 -g -Wall -Werror "  -target native  bpf ../bpf/net/net.c -- -I../bpf/headers
 package user
 
 import (
-	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/cilium/ebpf/link"
-	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -58,145 +51,6 @@ func DirectionToParent(dir string) uint32 {
 	}
 	return 0
 
-}
-
-func AttachSSLUprobe() (err error) {
-	stopper := make(chan os.Signal, 1)
-	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatal(err)
-	}
-	objs := bpfObjects{}
-
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
-
-	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libssl.so.1.1")
-	if err != nil {
-		return err
-	}
-	up1, err := ex.Uprobe("SSL_write", objs.UprobeSsL_write, nil)
-	if err != nil {
-		log.Fatalf("creating uprobe: %s", err)
-	}
-	up2, err := ex.Uprobe("SSL_write", prog, nil)
-	if err != nil {
-		log.Fatalf("creating uprobe: %s", err)
-	}
-
-	defer up1.Close()
-	defer up2.Close()
-
-	rd, err := perf.NewReader(objs.Events, os.Getpagesize())
-	if err != nil {
-		log.Fatalf("creating perf event reader: %s", err)
-	}
-	defer rd.Close()
-	go func() {
-		<-stopper
-		log.Println("Received signal, exiting program..")
-		if err := rd.Close(); err != nil {
-			log.Fatalf("closing perf event reader: %s", err)
-		}
-	}()
-	fmt.Println("Tracing... Hit Ctrl-C to end.")
-	fmt.Printf("   %-12s  %-s\n", "EVENT", "TIME(ns)")
-	var event bpfGcevent
-	for {
-		record, err := rd.Read()
-		if err != nil {
-			if errors.Is(err, perf.ErrClosed) {
-				return
-			}
-			log.Printf("reading from perf event reader: %s", err)
-			continue
-		}
-		if record.LostSamples != 0 {
-			log.Printf("perf event ring buffer full, dropped %d samples", record.LostSamples)
-			continue
-		}
-		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
-			log.Printf("parsing perf event: %s", err)
-			continue
-		}
-
-		fmt.Printf("   %-12s  %-d\n", gcEvent[event.Event], event.Time)
-	}
-	return nil
-}
-
-type Ipv4KeyT struct {
-	Pid   uint32
-	Saddr uint32
-	Daddr uint32
-	Lport uint16
-	Dport uint16
-}
-
-func AttachTcpKprobe() (err error) {
-	fn := "tcp_sendmsg"
-
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatal(err)
-	}
-
-	objs := bpfObjects{}
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
-
-	kp, err := link.Kprobe(fn, objs.KtcpSendmsg, nil)
-	if err != nil {
-		log.Fatalf("opening kprobe: %s", err)
-	}
-	defer kp.Close()
-
-	// Read loop reporting the total amount of times the kernel
-	// function was entered, once per second.
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	log.Println("Waiting for events..")
-	log.Printf("%-15s %-6s -> %-15s %-6s %-6s",
-		"Src addr",
-		"Port",
-		"Dest addr",
-		"Port",
-		"RTT",
-	)
-	for range ticker.C {
-		var values []uint32
-		var key Ipv4KeyT
-		// if err := objs.KprobeMap.Lookup(mapKey, &value); err != nil {
-		// 	log.Fatalf("reading map: %v", err)
-		// }
-		iter := objs.bpfMaps.TcpMap.Iterate()
-		for iter.Next(&key, &values) {
-			var sum uint32
-			for _, n := range values {
-				sum += n
-			}
-			log.Printf("%-15s %-6d -> %-15s %-6d %-6d",
-				intToIP(key.Saddr),
-				key.Lport,
-				intToIP(key.Daddr),
-				key.Dport,
-				sum,
-			)
-		}
-		//log.Printf("%s called %d times\n", fn, value)
-	}
-	return nil
-}
-
-// intToIP converts IPv4 number to net.IP
-func intToIP(ipNum uint32) net.IP {
-	ip := make(net.IP, 4)
-	binary.LittleEndian.PutUint32(ip, ipNum)
-	return ip
 }
 
 // 	link, err := netlink.LinkByName(ifName)

@@ -2,15 +2,297 @@
 #include <bpf_endian.h>
 #include <bpf_helpers.h>
 #include <bpf_tracing.h>
+#include <builtins.h>
 
 #define TC_ACT_OK 0
 #define ETH_P_IP 0x0800 /* Internet Protocol packet */
 #define ETH_HLEN 14
 #define AF_INET 2
 #define AF_INET6 3
+#define MAX_DATA_SIZE 4000
+#define MAX_BUF_SIZE 1500
 
 unsigned long long load_word(void *skb,
                              unsigned long long off) asm("llvm.bpf.load.word");
+
+static const char GET[3] = "GET";
+static const char POST[4] = "POST";
+static const char PUT[3] = "PUT";
+static const char DELETE[6] = "DELETE";
+static const char HTTP[4] = "HTTP";
+
+struct so_event
+{
+    // u32 src_addr;
+    // u32 dst_addr;
+    // u16 src_port;
+    // u16 dst_port;
+    // union
+    // {
+    //     u32 ports;
+    //     u16 port16[2];
+    // };
+    // u32 ip_proto;
+    // u32 pkt_type;
+    // u32 ifindex;
+    // u32 payload_length;
+};
+
+// struct
+// {
+//     __uint(type, BPF_MAP_TYPE_RINGBUF);
+//     __uint(max_entries, 256 * 1024);
+// } httpevent SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+} httpevent SEC(".maps");
+
+#define IP_MF 0x2000
+#define IP_OFFSET 0x1FFF
+#define IP_TCP 6
+#define ETH_HLEN 14
+
+static inline int ip_is_fragment(struct __sk_buff *skb, __u32 nhoff)
+{
+    __u16 frag_off;
+
+    bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, frag_off), &frag_off, 2);
+    frag_off = __bpf_ntohs(frag_off);
+    return frag_off & (IP_MF | IP_OFFSET);
+}
+
+struct data_key
+{
+    u32 src_ip;
+    u32 dst_ip;
+    u16 src_port;
+    u16 dst_port;
+};
+
+struct data_value
+{
+    int timestamp;
+    // char comm[64];
+};
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct data_key);
+    __type(value, struct data_value);
+    __uint(max_entries, 2048);
+} proc_http_session SEC(".maps");
+
+// SEC("kprobe/tcp_sendmsg")
+// int http_tcp_sendmsg(struct pt_regs *ctx)
+// {
+//     u64 pid_tgid = bpf_get_current_pid_tgid();
+//     u64 uid_gid = bpf_get_current_uid_gid();
+
+//     struct data_key key = {};
+//     key.src_ip = htonl(saddr);
+//     key.dst_ip = htonl(daddr);
+//     key.src_port = sport;
+//     key.dst_port = htons(dport);
+
+//     struct data_value value = {};
+//     value.pid = pid_tgid >> 32;
+//     value.uid = (u32)uid_gid;
+//     value.gid = uid_gid >> 32;
+//     bpf_get_current_comm(value.comm, 64);
+
+//     proc_http_datas.update(&key, &value);
+//     return 0;
+// }
+
+SEC("socket")
+int socket_hander(struct __sk_buff *skb)
+{
+
+    u8 verlen;
+    u16 proto;
+    u32 nhoff = ETH_HLEN;
+    // u32 ip_proto = 0;
+    u32 tcp_hdr_len = 0;
+    u16 tlen;
+    u32 payload_offset = 0;
+    u32 payload_length = 0;
+    u8 hdr_len;
+
+    // void *data = (void *)(long)skb->data;
+    // void *data_end = (void *)(long)skb->data_end;
+    // if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
+    // {
+    //     return TC_ACT_OK;
+    // }
+
+    proto = skb->protocol;
+    if (proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    if (ip_is_fragment(skb, nhoff))
+        return 0;
+
+    // 获取IP头部的长度
+    bpf_skb_load_bytes(skb, ETH_HLEN, &hdr_len, sizeof(hdr_len));
+    hdr_len &= 0x0f;
+    hdr_len *= 4;
+
+    if (hdr_len < sizeof(struct iphdr))
+    {
+        return 0;
+    }
+
+    // 这行代码计算了TCP头部的偏移量。它将以太网帧头部的长度（nhoff）与IP头部的长度（hdr_len）相加，得到TCP头部的起始位置
+    tcp_hdr_len = nhoff + hdr_len;
+    bpf_skb_load_bytes(skb, nhoff + 0, &verlen, 1);
+
+    // 数据包中加载IP头部的总长度字段。IP头部总长度字段表示整个IP数据包的长度，包括IP头部和tcp 头部和数据部分。
+    bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, tot_len), &tlen, sizeof(tlen));
+
+    // 用于计算TCP头部的长度
+    u8 doff;
+    bpf_skb_load_bytes(skb, tcp_hdr_len + offsetof(struct tcphdr, ack_seq) + 4, &doff, sizeof(doff));
+    doff &= 0xf0;
+    doff >>= 4;
+    doff *= 4;
+
+    // 以太网帧头部长度、IP头部长度和TCP头部长度相加，得到HTTP请求的数据部分的偏移量，然后通过减去总长度、IP头部长度和TCP头部长度，计算出HTTP请求数据的长度
+    payload_offset = ETH_HLEN + hdr_len + doff;
+    payload_length = __bpf_ntohs(tlen) - hdr_len - doff;
+
+    char line_buffer[7];
+    if (payload_length < 7 || payload_offset < 0)
+    {
+        return 0;
+    }
+    bpf_skb_load_bytes(skb, payload_offset, line_buffer, 7);
+
+    //  return skb->len;
+
+    if (__bpf_memcmp(line_buffer, GET, 3) != 0 &&
+        __bpf_memcmp(line_buffer, POST, 4) != 0 &&
+        __bpf_memcmp(line_buffer, PUT, 3) != 0 &&
+        __bpf_memcmp(line_buffer, DELETE, 6) != 0 &&
+        __bpf_memcmp(line_buffer, HTTP, 4) != 0)
+    { // 如果不是http请求，查看是否有 http session
+        // struct iphdr ip;
+        // bpf_skb_load_bytes(skb, ETH_HLEN, &ip, sizeof(struct iphdr));
+
+        // struct tcphdr tcp;
+        // bpf_skb_load_bytes(skb, ETH_HLEN + hdr_len, &tcp, sizeof(struct tcphdr));
+
+        // struct data_key session_key = {};
+        // session_key.src_ip = ip.saddr;
+        // session_key.dst_ip = ip.daddr;
+        // session_key.src_port = __bpf_ntohs(tcp.source);
+        // session_key.dst_port = __bpf_ntohs(tcp.dest);
+        // struct data_value *value = bpf_map_lookup_elem(&proc_http_session, &session_key);
+        // if (value) // 存在发送事件
+        // {
+        //     // e = bpf_ringbuf_reserve(&httpevent, sizeof(*e), 0);
+        //     // if (!e)
+        //     //     return 0;
+
+        //     // e->ip_proto = ip_proto;
+        //     // bpf_skb_load_bytes(skb, nhoff + hdr_len, &(e->ports), 4);
+        //     // e->pkt_type = skb->pkt_type;
+        //     // e->ifindex = skb->ifindex;
+
+        //     // e->payload_length = payload_length;
+        //     // bpf_skb_load_bytes(skb, payload_offset, e->payload, 150);
+        //     // e->src_addr = ip.saddr;
+        //     // e->dst_addr = ip.daddr;
+        //     // e->src_port = __bpf_ntohs(tcp.source);
+        //     // e->dst_port = __bpf_ntohs(tcp.dest);
+        //     // bpf_ringbuf_submit(e, 0);
+        // }
+        return 0;
+    }
+    bpf_printk("%d len %d buffer: %s", payload_offset, payload_length, line_buffer);
+    struct iphdr ip;
+    bpf_skb_load_bytes(skb, ETH_HLEN, &ip, sizeof(struct iphdr));
+
+    struct tcphdr tcp;
+    bpf_skb_load_bytes(skb, ETH_HLEN + hdr_len, &tcp, sizeof(struct tcphdr));
+
+    // bpf_printk("daddr:%d", ip.daddr);
+
+    /* reserve sample from BPF ringbuf */
+    // e = bpf_ringbuf_reserve(&httpevent, sizeof(*e), 0);
+    // if (!e)
+    //     return 0;
+    struct so_event e = {};
+    //  e.ip_proto = ip_proto;
+    //  bpf_skb_load_bytes(skb, nhoff + hdr_len, &(e.ports), 4);
+    // e.pkt_type = skb->pkt_type;
+    // e.ifindex = skb->ifindex;
+
+    // e->payload_length = payload_length;
+    bpf_printk("payload_length:%d", payload_length);
+    // bpf_skb_load_bytes(skb, payload_offset, e->payload, 150);
+    // e.src_addr = ip.saddr;
+    // e.dst_addr = ip.daddr;
+    // e.src_port = __bpf_ntohs(tcp.source);
+    // e.dst_port = __bpf_ntohs(tcp.dest);
+
+    // struct data_key session_key = {};
+    // session_key.src_ip = e.src_addr;
+    // session_key.dst_ip = e.dst_addr;
+    // session_key.src_port = e.src_port;
+    // session_key.dst_port = e.dst_port;
+    // struct data_value *value = bpf_map_lookup_elem(&proc_http_session, &session_key);
+
+    // // u64 uid_gid = bpf_get_current_uid_gid();
+
+    // // v.pid = pid_tgid >> 32;
+    // // v.uid = (u32)uid_gid;
+    // // v.gid = uid_gid >> 32;
+    // // bpf_printk("pid:%d,uid:%d,gid:%d", v.pid, v.uid, v.gid);
+    // if (!value)
+    // {
+    //     struct data_value v = {};
+    //     v.timestamp = bpf_ktime_get_ns();
+    //     bpf_map_update_elem(&proc_http_session, &session_key, &v, BPF_ANY);
+    //     // return 1;
+    // }
+
+    bpf_perf_event_output(skb, &httpevent, ((__u64)skb->len << 32) | BPF_F_CURRENT_CPU, &e, sizeof(struct so_event));
+    // proc_http_session
+    // bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, saddr), &(e->src_addr), 4);
+    // bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, daddr), &(e->dst_addr), 4);
+    //  bpf_ringbuf_submit(e, 0);
+
+    return skb->len;
+}
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 1);
+} counter SEC(".maps");
+
+// Socket Filter program //
+SEC("socket_filter")
+int packet_counter(struct __sk_buff *skb)
+{
+    // Simply increase counter
+    __u32 idx = 0;
+    __u64 *value = bpf_map_lookup_elem(&counter, &idx);
+    if (!value)
+    {
+        u64 initval = 1;
+        bpf_map_update_elem(&counter, &idx, &initval, BPF_ANY);
+        return 1;
+    }
+    __sync_fetch_and_add(value, 1);
+
+    return 1;
+}
 
 SEC("tc-egress")
 unsigned int tc_egress(struct __sk_buff *skb)
@@ -63,8 +345,6 @@ struct ipv4_key_t
     u16 lport;
     u16 dport;
 };
-
-#define MAX_DATA_SIZE 4000
 
 enum ssl_data_event_type
 {
@@ -123,7 +403,7 @@ static __inline struct ssl_data_event_t *create_ssl_data_event(uint64_t current_
 static int process_ssl_data(struct pt_regs *ctx, uint64_t id, enum ssl_data_event_type type,
                             const char *buf)
 {
-    int len = (int)(ctx)->ax;
+    int len = (int)PT_REGS_RC(ctx);
     if (len < 0)
     {
         return 0;

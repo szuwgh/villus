@@ -13,6 +13,15 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type bpfDataKey struct {
+	SrcIp   uint32
+	DstIp   uint32
+	SrcPort uint16
+	DstPort uint16
+}
+
+type bpfDataValue struct{ Timestamp int32 }
+
 type bpfSslDataEventT struct {
 	Type        int32
 	_           [4]byte
@@ -66,6 +75,8 @@ type bpfSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
 	KtcpSendmsg       *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
+	PacketCounter     *ebpf.ProgramSpec `ebpf:"packet_counter"`
+	SocketHander      *ebpf.ProgramSpec `ebpf:"socket_hander"`
 	TcEgress          *ebpf.ProgramSpec `ebpf:"tc_egress"`
 	UprobeSsL_write   *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
 	UretprobeSslWrite *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
@@ -76,7 +87,10 @@ type bpfProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
 	ActiveSslWriteArgsMap *ebpf.MapSpec `ebpf:"active_ssl_write_args_map"`
+	Counter               *ebpf.MapSpec `ebpf:"counter"`
 	DataBufferHeap        *ebpf.MapSpec `ebpf:"data_buffer_heap"`
+	Httpevent             *ebpf.MapSpec `ebpf:"httpevent"`
+	ProcHttpSession       *ebpf.MapSpec `ebpf:"proc_http_session"`
 	TcpMap                *ebpf.MapSpec `ebpf:"tcp_map"`
 	TlsEvents             *ebpf.MapSpec `ebpf:"tls_events"`
 }
@@ -101,7 +115,10 @@ func (o *bpfObjects) Close() error {
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
 	ActiveSslWriteArgsMap *ebpf.Map `ebpf:"active_ssl_write_args_map"`
+	Counter               *ebpf.Map `ebpf:"counter"`
 	DataBufferHeap        *ebpf.Map `ebpf:"data_buffer_heap"`
+	Httpevent             *ebpf.Map `ebpf:"httpevent"`
+	ProcHttpSession       *ebpf.Map `ebpf:"proc_http_session"`
 	TcpMap                *ebpf.Map `ebpf:"tcp_map"`
 	TlsEvents             *ebpf.Map `ebpf:"tls_events"`
 }
@@ -109,7 +126,10 @@ type bpfMaps struct {
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
 		m.ActiveSslWriteArgsMap,
+		m.Counter,
 		m.DataBufferHeap,
+		m.Httpevent,
+		m.ProcHttpSession,
 		m.TcpMap,
 		m.TlsEvents,
 	)
@@ -120,6 +140,8 @@ func (m *bpfMaps) Close() error {
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
 	KtcpSendmsg       *ebpf.Program `ebpf:"ktcp_sendmsg"`
+	PacketCounter     *ebpf.Program `ebpf:"packet_counter"`
+	SocketHander      *ebpf.Program `ebpf:"socket_hander"`
 	TcEgress          *ebpf.Program `ebpf:"tc_egress"`
 	UprobeSsL_write   *ebpf.Program `ebpf:"uprobe_ssL_write"`
 	UretprobeSslWrite *ebpf.Program `ebpf:"uretprobe_ssl_write"`
@@ -128,6 +150,8 @@ type bpfPrograms struct {
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
 		p.KtcpSendmsg,
+		p.PacketCounter,
+		p.SocketHander,
 		p.TcEgress,
 		p.UprobeSsL_write,
 		p.UretprobeSslWrite,
