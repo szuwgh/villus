@@ -25,12 +25,6 @@ var versionCmd = &cobra.Command{
 	Run:   versionCommandFunc,
 }
 
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "show version",
-	Run:   startCommandFunc,
-}
-
 var rmcmd = &cobra.Command{
 	Use:   "rm",
 	Short: "show version",
@@ -58,7 +52,7 @@ var gotlscmd = &cobra.Command{
 var tlscmd = &cobra.Command{
 	Use:   "tls",
 	Short: "show version",
-	Run:   tcpcmdFunc,
+	Run:   tlscmdFunc,
 }
 
 var httpcmd = &cobra.Command{
@@ -70,7 +64,7 @@ var httpcmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(listcmd)
-	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(tcCmd)
 	rootCmd.AddCommand(rmcmd)
 	rootCmd.AddCommand(tcpcmd)
 	rootCmd.AddCommand(tlscmd)
@@ -100,15 +94,6 @@ func rmcmdFunc(command *cobra.Command, args []string) {
 	}
 }
 
-func startCommandFunc(command *cobra.Command, args []string) {
-	fmt.Println("start")
-	err := user.AttachEbpfTc("ens33")
-	if err != nil {
-		fmt.Println(err)
-	}
-	select {}
-}
-
 func versionCommandFunc(command *cobra.Command, args []string) {
 	fmt.Println(VERSION)
 	err := user.ObserveTC("ens33")
@@ -118,9 +103,18 @@ func versionCommandFunc(command *cobra.Command, args []string) {
 	select {}
 }
 
-func tcpcmdFunc(command *cobra.Command, args []string) {
+func tlscmdFunc(command *cobra.Command, args []string) {
 	fmt.Println("tls")
 	err := user.AttachSSLUprobe()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+}
+
+func tcpcmdFunc(command *cobra.Command, args []string) {
+	fmt.Println("tcp")
+	err := user.AttachTcpSendMsgKprobe()
 	if err != nil {
 		fmt.Println(err)
 	}

@@ -20,6 +20,7 @@ clean:
 	rm -f user/bpf_bpfel_x86.go
 
 build:
+	export GO111MODULE=on
 	cd user/ && go generate 
 	$(GOBUILD) -v -o $(GO_BINARY)  
 	

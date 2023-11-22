@@ -5,14 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
-	"github.com/cilium/ebpf/rlimit"
+	"github.com/szuwgh/villus/common/vlog"
 )
 
 type SslDataEventT struct {
@@ -29,14 +28,7 @@ type SslDataEventT struct {
 func AttachSSLUprobe() (err error) {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatal(err)
-	}
-	objs := bpfObjects{}
 
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
-	}
 	defer objs.Close()
 
 	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libssl.so.1.1")
@@ -45,11 +37,11 @@ func AttachSSLUprobe() (err error) {
 	}
 	up1, err := ex.Uprobe("SSL_write", objs.UprobeSsL_write, nil)
 	if err != nil {
-		log.Fatalf("creating uprobe: %s", err)
+		vlog.Fatalf("creating uprobe: %s", err)
 	}
 	up2, err := ex.Uretprobe("SSL_write", objs.UretprobeSslWrite, nil)
 	if err != nil {
-		log.Fatalf("creating uprobe: %s", err)
+		vlog.Fatalf("creating uprobe: %s", err)
 	}
 
 	defer up1.Close()
@@ -57,14 +49,14 @@ func AttachSSLUprobe() (err error) {
 
 	rd, err := perf.NewReader(objs.TlsEvents, os.Getpagesize())
 	if err != nil {
-		log.Fatalf("creating perf event reader: %s", err)
+		vlog.Fatalf("creating perf event reader: %s", err)
 	}
 	defer rd.Close()
 	go func() {
 		<-stopper
-		log.Println("Received signal, exiting program..")
+		vlog.Println("Received signal, exiting program..")
 		if err := rd.Close(); err != nil {
-			log.Fatalf("closing perf event reader: %s", err)
+			vlog.Fatalf("closing perf event reader: %s", err)
 		}
 	}()
 	fmt.Println("Tracing... Hit Ctrl-C to end.")
@@ -76,15 +68,15 @@ func AttachSSLUprobe() (err error) {
 			if errors.Is(err, perf.ErrClosed) {
 				return err
 			}
-			log.Printf("reading from perf event reader: %s", err)
+			vlog.Printf("reading from perf event reader: %s", err)
 			continue
 		}
 		if record.LostSamples != 0 {
-			log.Printf("perf event ring buffer full, dropped %d samples", record.LostSamples)
+			vlog.Printf("perf event ring buffer full, dropped %d samples", record.LostSamples)
 			continue
 		}
 		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
-			log.Printf("parsing perf event: %s", err)
+			vlog.Printf("parsing perf event: %s", err)
 			continue
 		}
 

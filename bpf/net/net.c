@@ -23,19 +23,11 @@ static const char HTTP[4] = "HTTP";
 
 struct so_event
 {
-    // u32 src_addr;
-    // u32 dst_addr;
-    // u16 src_port;
-    // u16 dst_port;
-    // union
-    // {
-    //     u32 ports;
-    //     u16 port16[2];
-    // };
-    // u32 ip_proto;
-    // u32 pkt_type;
-    // u32 ifindex;
-    // u32 payload_length;
+    u32 src_addr;
+    u32 dst_addr;
+    u16 src_port;
+    u16 dst_port;
+    u32 payload_length;
 };
 
 // struct
@@ -121,13 +113,6 @@ int socket_hander(struct __sk_buff *skb)
     u32 payload_length = 0;
     u8 hdr_len;
 
-    // void *data = (void *)(long)skb->data;
-    // void *data_end = (void *)(long)skb->data_end;
-    // if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
-    // {
-    //     return TC_ACT_OK;
-    // }
-
     proto = skb->protocol;
     if (proto != bpf_htons(ETH_P_IP))
         return TC_ACT_OK;
@@ -170,45 +155,12 @@ int socket_hander(struct __sk_buff *skb)
     }
     bpf_skb_load_bytes(skb, payload_offset, line_buffer, 7);
 
-    //  return skb->len;
-
     if (__bpf_memcmp(line_buffer, GET, 3) != 0 &&
         __bpf_memcmp(line_buffer, POST, 4) != 0 &&
         __bpf_memcmp(line_buffer, PUT, 3) != 0 &&
         __bpf_memcmp(line_buffer, DELETE, 6) != 0 &&
         __bpf_memcmp(line_buffer, HTTP, 4) != 0)
     { // 如果不是http请求，查看是否有 http session
-        // struct iphdr ip;
-        // bpf_skb_load_bytes(skb, ETH_HLEN, &ip, sizeof(struct iphdr));
-
-        // struct tcphdr tcp;
-        // bpf_skb_load_bytes(skb, ETH_HLEN + hdr_len, &tcp, sizeof(struct tcphdr));
-
-        // struct data_key session_key = {};
-        // session_key.src_ip = ip.saddr;
-        // session_key.dst_ip = ip.daddr;
-        // session_key.src_port = __bpf_ntohs(tcp.source);
-        // session_key.dst_port = __bpf_ntohs(tcp.dest);
-        // struct data_value *value = bpf_map_lookup_elem(&proc_http_session, &session_key);
-        // if (value) // 存在发送事件
-        // {
-        //     // e = bpf_ringbuf_reserve(&httpevent, sizeof(*e), 0);
-        //     // if (!e)
-        //     //     return 0;
-
-        //     // e->ip_proto = ip_proto;
-        //     // bpf_skb_load_bytes(skb, nhoff + hdr_len, &(e->ports), 4);
-        //     // e->pkt_type = skb->pkt_type;
-        //     // e->ifindex = skb->ifindex;
-
-        //     // e->payload_length = payload_length;
-        //     // bpf_skb_load_bytes(skb, payload_offset, e->payload, 150);
-        //     // e->src_addr = ip.saddr;
-        //     // e->dst_addr = ip.daddr;
-        //     // e->src_port = __bpf_ntohs(tcp.source);
-        //     // e->dst_port = __bpf_ntohs(tcp.dest);
-        //     // bpf_ringbuf_submit(e, 0);
-        // }
         return 0;
     }
     bpf_printk("%d len %d buffer: %s", payload_offset, payload_length, line_buffer);
@@ -218,81 +170,29 @@ int socket_hander(struct __sk_buff *skb)
     struct tcphdr tcp;
     bpf_skb_load_bytes(skb, ETH_HLEN + hdr_len, &tcp, sizeof(struct tcphdr));
 
-    // bpf_printk("daddr:%d", ip.daddr);
-
-    /* reserve sample from BPF ringbuf */
-    // e = bpf_ringbuf_reserve(&httpevent, sizeof(*e), 0);
-    // if (!e)
-    //     return 0;
     struct so_event e = {};
-    //  e.ip_proto = ip_proto;
-    //  bpf_skb_load_bytes(skb, nhoff + hdr_len, &(e.ports), 4);
-    // e.pkt_type = skb->pkt_type;
-    // e.ifindex = skb->ifindex;
-
-    // e->payload_length = payload_length;
     bpf_printk("payload_length:%d", payload_length);
     // bpf_skb_load_bytes(skb, payload_offset, e->payload, 150);
-    // e.src_addr = ip.saddr;
-    // e.dst_addr = ip.daddr;
-    // e.src_port = __bpf_ntohs(tcp.source);
-    // e.dst_port = __bpf_ntohs(tcp.dest);
-
-    // struct data_key session_key = {};
-    // session_key.src_ip = e.src_addr;
-    // session_key.dst_ip = e.dst_addr;
-    // session_key.src_port = e.src_port;
-    // session_key.dst_port = e.dst_port;
-    // struct data_value *value = bpf_map_lookup_elem(&proc_http_session, &session_key);
-
-    // // u64 uid_gid = bpf_get_current_uid_gid();
-
-    // // v.pid = pid_tgid >> 32;
-    // // v.uid = (u32)uid_gid;
-    // // v.gid = uid_gid >> 32;
-    // // bpf_printk("pid:%d,uid:%d,gid:%d", v.pid, v.uid, v.gid);
-    // if (!value)
-    // {
-    //     struct data_value v = {};
-    //     v.timestamp = bpf_ktime_get_ns();
-    //     bpf_map_update_elem(&proc_http_session, &session_key, &v, BPF_ANY);
-    //     // return 1;
-    // }
+    e.src_addr = ip.saddr;
+    e.dst_addr = ip.daddr;
+    e.src_port = __bpf_ntohs(tcp.source);
+    e.dst_port = __bpf_ntohs(tcp.dest);
 
     bpf_perf_event_output(skb, &httpevent, ((__u64)skb->len << 32) | BPF_F_CURRENT_CPU, &e, sizeof(struct so_event));
-    // proc_http_session
-    // bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, saddr), &(e->src_addr), 4);
-    // bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, daddr), &(e->dst_addr), 4);
-    //  bpf_ringbuf_submit(e, 0);
-
     return skb->len;
 }
 
+/***********************************************************
+ * tc限流 嗅探相关
+ ***********************************************************/
+
 struct
 {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, u32);
-    __type(value, u64);
-    __uint(max_entries, 1);
-} counter SEC(".maps");
-
-// Socket Filter program //
-SEC("socket_filter")
-int packet_counter(struct __sk_buff *skb)
-{
-    // Simply increase counter
-    __u32 idx = 0;
-    __u64 *value = bpf_map_lookup_elem(&counter, &idx);
-    if (!value)
-    {
-        u64 initval = 1;
-        bpf_map_update_elem(&counter, &idx, &initval, BPF_ANY);
-        return 1;
-    }
-    __sync_fetch_and_add(value, 1);
-
-    return 1;
-}
+    __type(value, u32);
+    __uint(max_entries, 1024);
+} tc_daddr_map SEC(".maps");
 
 SEC("tc-egress")
 unsigned int tc_egress(struct __sk_buff *skb)
@@ -308,43 +208,30 @@ unsigned int tc_egress(struct __sk_buff *skb)
     {
         return TC_ACT_OK;
     }
-    struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-    unsigned long long daddr = load_word(skb, ETH_HLEN + offsetof(struct iphdr, daddr));
-    uint16_t dstPortNumber = __bpf_ntohs(tcph->dest);
-    if (dstPortNumber != 5201)
-        return TC_ACT_OK;
-    if (daddr != 0xac120515) //  172.18.5.21
-        return TC_ACT_OK;
+    // struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+    // unsigned long long daddr = load_word(skb, ETH_HLEN + offsetof(struct iphdr, daddr));
+    u32 daddr;
+    bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr), &daddr, 4);
 
-    return 0x100001;
+    u32 *valp = bpf_map_lookup_elem(&tc_daddr_map, &daddr);
+    bpf_printk("daddr:%d", daddr);
+    if (valp)
+    {
+        bpf_printk("daddr:%d,valp:%d", daddr, *valp);
+        return *valp;
+    }
+    // uint16_t dstPortNumber = __bpf_ntohs(tcph->dest);
+    //  if (dstPortNumber != 5201)
+    //      return TC_ACT_OK;
+    // if (daddr != 0xac120515) //  172.18.5.21
+    //     return TC_ACT_OK;
+
+    return TC_ACT_OK;
 }
 
-// ebpf可通过跟踪内核函数，统计不同层次的网络流量。各层的流量差异主要在于包头，重传，控制报文等等。
-
-//    L4 TCP 纯数据流量：
-//     上行：kprobe统计tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size) size
-//     下行：kprobe统计 tcp_cleanup_rbuf(struct sock *sk, int copied) copied
-
-//     L4 UDP 纯数据流量：
-//     上行：kprobe统计 udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len) len
-//     下行：kprobe统计 skb_consume_udp(struct sock *sk, struct sk_buff *skb, int len) len
-
-//     L3 IP 流量
-//     上行： kprobe统计 ip_output(struct net *net, struct sock *sk, struct sk_buff *skb) skb->len
-//     下行： kprobe统计 ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev) skb->len
-
-//     L2 全部网络包流量：
-//     上行：tracepoint统计 net/net_dev_queue args->len
-//     下行：tracepoint统计 net/netif_receive_skb args->len
-
-struct ipv4_key_t
-{
-    u32 pid;
-    u32 saddr;
-    u32 daddr;
-    u16 lport;
-    u16 dport;
-};
+/***********************************************************
+ * htts嗅探相关
+ ***********************************************************/
 
 enum ssl_data_event_type
 {
@@ -451,15 +338,26 @@ int uretprobe_ssl_write(struct pt_regs *ctx)
     return 0;
 }
 
-// bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
-struct bpf_map_def SEC("maps") tcp_map = {
+/***********************************************************
+ * 统计相关
+ ***********************************************************/
+
+struct ipv4_key_t
+{
+    u32 saddr;
+    u32 daddr;
+    //  u16 lport;
+    // u16 dport;
+};
+
+struct bpf_map_def SEC("maps") ipv4_send_bytes = {
     .type = BPF_MAP_TYPE_LRU_PERCPU_HASH,
     .key_size = sizeof(struct ipv4_key_t),
     .value_size = sizeof(u64),
     .max_entries = 1024,
 };
 
-// (struct sock *sk,struct msghdr *msg, size_t size)
+//  tcp_sendmsg(struct sock *sk,struct msghdr *msg, size_t size)   size
 SEC("kprobe/tcp_sendmsg")
 int ktcp_sendmsg(struct pt_regs *ctx)
 {
@@ -468,7 +366,7 @@ int ktcp_sendmsg(struct pt_regs *ctx)
     {
         return 0;
     }
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    // u32 pid = bpf_get_current_pid_tgid() >> 32;
     // FILTER_PID
 
     u16 family, lport, dport;
@@ -484,21 +382,21 @@ int ktcp_sendmsg(struct pt_regs *ctx)
     bpf_probe_read(&src_ip4, sizeof(src_ip4), &sk->__sk_common.skc_rcv_saddr);
     bpf_probe_read(&dst_ip4, sizeof(dst_ip4), &sk->__sk_common.skc_daddr);
 
-    struct ipv4_key_t ipv4_key = {.pid = pid};
+    struct ipv4_key_t ipv4_key = {};
     ipv4_key.saddr = src_ip4;
     ipv4_key.daddr = dst_ip4;
-    ipv4_key.lport = lport;
-    ipv4_key.dport = __bpf_ntohs(dport);
+    //  ipv4_key.lport = lport;
+    //  ipv4_key.dport = __bpf_ntohs(dport);
 
     if (src_ip4 == dst_ip4)
     {
         return 0;
     }
-    u64 *valp = bpf_map_lookup_elem(&tcp_map, &ipv4_key);
+    u64 *valp = bpf_map_lookup_elem(&ipv4_send_bytes, &ipv4_key);
     if (!valp)
     {
         u64 initval = 0;
-        bpf_map_update_elem(&tcp_map, &ipv4_key, &initval, BPF_ANY);
+        bpf_map_update_elem(&ipv4_send_bytes, &ipv4_key, &initval, BPF_ANY);
         return 0;
     }
     long size = PT_REGS_PARM3(ctx);
@@ -506,50 +404,56 @@ int ktcp_sendmsg(struct pt_regs *ctx)
     return 0;
 }
 
-// SEC("kprobe/tcp_sendmsg")
-// int ktcp_sendmsg(struct pt_regs *ctx)
-// {
-//     struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
-//     if (sk == NULL)
-//     {
-//         return 0;
-//     }
-//     u32 pid = bpf_get_current_pid_tgid() >> 32;
-//     // FILTER_PID
+struct bpf_map_def SEC("maps") ipv4_recv_bytes = {
+    .type = BPF_MAP_TYPE_LRU_PERCPU_HASH,
+    .key_size = sizeof(struct ipv4_key_t),
+    .value_size = sizeof(u64),
+    .max_entries = 1024,
+};
 
-//     u16 family, lport, dport;
-//     u32 src_ip4, dst_ip4;
-//     bpf_probe_read(&family, sizeof(family), &sk->__sk_common.skc_family);
+// tcp_cleanup_rbuf(struct sock *sk, int copied)   copied
+SEC("kprobe/tcp_cleanup_rbuf")
+int ktcp_cleanup_rbuf(struct pt_regs *ctx)
+{
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    if (sk == NULL)
+    {
+        return 0;
+    }
+    // u32 pid = bpf_get_current_pid_tgid() >> 32;
+    //  FILTER_PID
 
-//     if (family != AF_INET)
-//     {
-//         return 0;
-//     }
-//     bpf_probe_read(&lport, sizeof(lport), &sk->__sk_common.skc_num);
-//     bpf_probe_read(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
-//     bpf_probe_read(&src_ip4, sizeof(src_ip4), &sk->__sk_common.skc_rcv_saddr);
-//     bpf_probe_read(&dst_ip4, sizeof(dst_ip4), &sk->__sk_common.skc_daddr);
+    u16 family, lport, dport;
+    u32 src_ip4, dst_ip4;
+    bpf_probe_read(&family, sizeof(family), &sk->__sk_common.skc_family);
 
-//     struct ipv4_key_t ipv4_key = {.pid = pid};
-//     ipv4_key.saddr = src_ip4;
-//     ipv4_key.daddr = dst_ip4;
-//     ipv4_key.lport = lport;
-//     ipv4_key.dport = __bpf_ntohs(dport);
+    if (family != AF_INET)
+    {
+        return 0;
+    }
+    bpf_probe_read(&lport, sizeof(lport), &sk->__sk_common.skc_num);
+    bpf_probe_read(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    bpf_probe_read(&src_ip4, sizeof(src_ip4), &sk->__sk_common.skc_rcv_saddr);
+    bpf_probe_read(&dst_ip4, sizeof(dst_ip4), &sk->__sk_common.skc_daddr);
 
-//     if (src_ip4 == dst_ip4)
-//     {
-//         return 0;
-//     }
-//     u64 *valp = bpf_map_lookup_elem(&tcp_map, &ipv4_key);
-//     if (!valp)
-//     {
-//         u64 initval = 0;
-//         bpf_map_update_elem(&tcp_map, &ipv4_key, &initval, BPF_ANY);
-//         return 0;
-//     }
-//     long size = PT_REGS_PARM3(ctx);
-//     __sync_fetch_and_add(valp, size);
-//     return 0;
-// }
+    struct ipv4_key_t ipv4_key = {};
+    ipv4_key.saddr = src_ip4;
+    ipv4_key.daddr = dst_ip4;
+
+    if (src_ip4 == dst_ip4)
+    {
+        return 0;
+    }
+    u64 *valp = bpf_map_lookup_elem(&ipv4_recv_bytes, &ipv4_key);
+    if (!valp)
+    {
+        u64 initval = 0;
+        bpf_map_update_elem(&ipv4_recv_bytes, &ipv4_key, &initval, BPF_ANY);
+        return 0;
+    }
+    long size = PT_REGS_PARM2(ctx);
+    __sync_fetch_and_add(valp, size);
+    return 0;
+}
 
 char __license[] SEC("license") = "GPL";

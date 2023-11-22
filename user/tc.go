@@ -4,10 +4,15 @@ package user
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
+	"os"
 	"syscall"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/rlimit"
+	"github.com/szuwgh/villus/common/bpf"
+	"github.com/szuwgh/villus/common/inet"
+	"github.com/szuwgh/villus/common/vlog"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -40,6 +45,8 @@ const (
 	DirUnspec  = "unspecified"
 	DirIngress = "ingress"
 	DirEgress  = "egress"
+
+	BpfFsPath = "/sys/fs/bpf/"
 )
 
 func DirectionToParent(dir string) uint32 {
@@ -76,7 +83,7 @@ func DirectionToParent(dir string) uint32 {
 
 // 	objs := bpfObjects{}
 // 	if err := loadBpfObjects(&objs, nil); err != nil {
-// 		log.Fatalf("loading objects: %v", err)
+// 		vlog.Fatalf("loading objects: %v", err)
 // 	}
 // 	defer objs.Close()
 
@@ -131,7 +138,12 @@ func DirectionToParent(dir string) uint32 {
 //   match ac120515/ffffffff at 16
 //   match 00001451/0000ffff at 20
 
-func AttachEbpfTc(ifName string) (err error) {
+func Add_ip(ip string) (err error) {
+
+	return nil
+}
+
+func InitTcQdisc(ifName string) (err error) {
 	// 创建一个 netlink socket
 	link, err := netlink.LinkByName(ifName)
 	if err != nil {
@@ -139,59 +151,240 @@ func AttachEbpfTc(ifName string) (err error) {
 	}
 
 	// 创建一个 qdisc
-
-	qdisc2 := netlink.NewHtb(netlink.QdiscAttrs{
+	qdisc := netlink.NewHtb(netlink.QdiscAttrs{
 		LinkIndex: link.Attrs().Index,
 		Handle:    netlink.MakeHandle(0x10, 0x0),
 		Parent:    netlink.HANDLE_ROOT,
 	})
-	qdisc2.Defcls = 12
-
-	err = netlink.QdiscAdd(qdisc2)
+	qdisc.Defcls = 12
+	err = netlink.QdiscAdd(qdisc)
 	if err != nil {
 		fmt.Println("Failed to create qdisc:", err)
 		return err
 	}
+	return
+}
 
+type TcClassConfig struct {
+	IfName string
+	Qdisc  uint32
+	Rate   string
+	Index  uint16
+}
+
+func AddTcClass(config TcClassConfig) (err error) {
+	rate, err := inet.BytesPerSecond2Int(config.Rate)
+	if err != nil {
+		return err
+	}
+	link, err := netlink.LinkByName(config.IfName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", config.IfName, err)
+	}
+	// 创建一个 netlink socket
 	class := netlink.NewHtbClass(netlink.ClassAttrs{
 		LinkIndex: link.Attrs().Index,
-		Handle:    netlink.MakeHandle(0x10, 0x1),
-		Parent:    qdisc2.QdiscAttrs.Handle,
+		Handle:    netlink.MakeHandle(0x10, config.Index),
+		Parent:    config.Qdisc,
 	}, netlink.HtbClassAttrs{
-		Rate: 100 * 1000, //5M
-		Ceil: 100 * 1000,
+		Rate: rate, // 100 kB/s
+		Ceil: rate,
 	})
 
 	err = netlink.ClassAdd(class)
 	if err != nil {
-		fmt.Println("Failed to create class:", err)
+		return fmt.Errorf("failed to create class: %s", err)
+	}
+	return
+}
+
+func LsIp() (err error) {
+
+	m, err := ebpf.LoadPinnedMap("/sys/fs/bpf/tc_daddr_map", &ebpf.LoadPinOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open BPF map: %v\n", err)
 		return err
 	}
-	fmt.Printf("0x%x\n", class.Handle)
-	objs := bpfObjects{}
+
+	iter := m.Iterate()
+	var ip uint32
+	var class uint32
+
+	for iter.Next(&ip, &class) {
+		vlog.Println(intToIP(ip), class)
+	}
+	return nil
+}
+
+func AddIp(ip string, class uint32) (err error) {
+
+	// 使用bpf.OpenMap打开eBPF map
+	m, err := ebpf.LoadPinnedMap("/sys/fs/bpf/tc_daddr_map", &ebpf.LoadPinOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open BPF map: %v\n", err)
+		return err
+	}
+	defer m.Close()
+	var i = inet.Ip2Int32(net.ParseIP(ip))
+	err = m.Put(&i, &class)
+	if err != nil {
+		//fmt.Fprintf(os.Stderr, "Error pinning eBPF Map: %v\n", err)
+		return err
+	}
+	//objs.TcDaddrMap.Pin(fileName string)
+
+	return nil
+}
+
+func LsTcClass(ifName string, qdisc uint32) (err error) {
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
+	classList, err := netlink.ClassList(link, qdisc)
+	if err != nil {
+		return fmt.Errorf("failed to get class: %s", err)
+	}
+	for _, v := range classList {
+		link, err := netlink.LinkByIndex(v.Attrs().LinkIndex)
+		if err != nil {
+			return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+		}
+		switch v.Type() {
+		case "htb":
+			{
+				htbClass, ok := v.(*netlink.HtbClass)
+				if !ok {
+					continue
+				}
+				fmt.Printf("class link index:%s(%d) parent:%s  handle:%s(%d) type:%s rate:%s\n",
+					link.Attrs().Name,
+					v.Attrs().LinkIndex,
+					netlink.HandleStr(v.Attrs().Parent),
+					netlink.HandleStr(v.Attrs().Handle), v.Attrs().Handle,
+					v.Type(),
+					inet.IntToToBytesPerSecond(htbClass.Rate*8))
+			}
+		}
+
+	}
+	return
+}
+
+func LsTcQdisc(ifName string) (err error) {
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
+
+	qdiscList, err := netlink.QdiscList(link)
+	if err != nil {
+		return fmt.Errorf("getting Qdisc %s by name: %w", ifName, err)
+	}
+	for _, v := range qdiscList {
+		link, err := netlink.LinkByIndex(v.Attrs().LinkIndex)
+		if err != nil {
+			return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+		}
+		fmt.Printf("qdisc link index:%s(%d) handle:%s(%d) type:%s\n", link.Attrs().Name, v.Attrs().LinkIndex, netlink.HandleStr(v.Attrs().Handle), v.Attrs().Handle, v.Type())
+	}
+	return
+}
+
+func RmTcQdisc(ifName string, handle uint32) (err error) {
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return err
+	}
+
+	qdiscList, err := netlink.QdiscList(link)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range qdiscList {
+		if f.Attrs().Handle == handle {
+			continue
+		}
+		if err := netlink.QdiscDel(f); err != nil {
+			return err
+		}
+	}
+	return
+}
+
+func DeleteEbpfTc(ifName string, qdisc uint32) (err error) {
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
 	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
+		vlog.Fatalf("loading objects: %v", err)
+	}
+	defer objs.Close()
+	mapInfo, err := objs.TcDaddrMap.Info()
+	if err != nil {
+		return err
+	}
+	mapPath := BpfFsPath + mapInfo.Name
+	err = bpf.UnMapPinned(mapPath)
+	if err != nil {
+		return err
+	}
+	filter := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    qdisc,
+			Protocol:  unix.ETH_P_IP,
+			Priority:  1,
+		},
+		Fd:           objs.TcEgress.FD(),
+		Name:         objs.TcEgress.String(),
+		DirectAction: false,
+	}
+
+	err = netlink.FilterDel(filter)
+	if err != nil {
+		fmt.Println("Failed to add filter:", err)
+		return
+	}
+
+	return nil
+}
+
+func AttachEbpfTc(ifName string, qdisc uint32) (err error) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		vlog.Fatal(err)
+	}
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		vlog.Fatalf("loading objects: %v", err)
 	}
 	defer objs.Close()
 
-	// qdisc := &netlink.GenericQdisc{
-	// 	QdiscAttrs: netlink.QdiscAttrs{
-	// 		LinkIndex: link.Attrs().Index,
-	// 		Handle:    netlink.MakeHandle(0xffff, 0),
-	// 		Parent:    netlink.HANDLE_CLSACT,
-	// 	},
-	// 	QdiscType: "clsact",
-	// }
-
-	// err = netlink.QdiscAdd(qdisc)
-	// if err != nil {
-	// 	return fmt.Errorf("could not get replace qdisc: %w", err)
-	// }
+	mapInfo, err := objs.TcDaddrMap.Info()
+	if err != nil {
+		return err
+	}
+	mapPath := BpfFsPath + mapInfo.Name
+	if !bpf.IsMapPinned(mapPath) {
+		err = objs.TcDaddrMap.Pin(mapPath)
+		if err != nil {
+			return fmt.Errorf("failed to pin map %s", err)
+		}
+	}
 
 	filter := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
-			Parent:    qdisc2.QdiscAttrs.Handle,
+			Parent:    qdisc,
 			Protocol:  unix.ETH_P_IP,
 			Priority:  1,
 		},
@@ -249,7 +442,7 @@ func ObserveTC(ifName string) (err error) {
 	fmt.Printf("%x\n", class.Handle)
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
+		vlog.Fatalf("loading objects: %v", err)
 	}
 	defer objs.Close()
 
@@ -339,25 +532,5 @@ func RemoveTCFilters(ifName string, tcDir uint32) error {
 		}
 	}
 
-	// filters, err := netlink.FilterList(link, netlink.HANDLE_MIN_INGRESS)
-	// if err != nil {
-	// 	return err
-	// }
-	// fmt.Println("------------")
-	// fmt.Println(filters)
-	// for _, f := range filters {
-	// 	if err := netlink.FilterDel(f); err != nil {
-	// 		return err
-	// 	}
-	// }
-
 	return nil
-}
-
-// Convert an IP to an integer
-func ip2int(ip net.IP) uint32 {
-	if len(ip) == 16 {
-		return binary.BigEndian.Uint32(ip[12:16])
-	}
-	return binary.BigEndian.Uint32(ip)
 }
