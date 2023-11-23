@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"fmt"
-
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/szuwgh/villus/common/vlog"
 	"github.com/szuwgh/villus/user"
 )
 
@@ -79,53 +79,53 @@ func Execute() {
 }
 
 func listcmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("list filter")
+	vlog.Println("list filter")
 	err := user.ListFilters("ens33")
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 }
 
 func rmcmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("remove filter")
+	vlog.Println("remove filter")
 	err := user.RemoveTCFilters("ens33", user.DirectionToParent(user.DirEgress))
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 }
 
 func versionCommandFunc(command *cobra.Command, args []string) {
-	fmt.Println(VERSION)
+	vlog.Println(VERSION)
 	err := user.ObserveTC("ens33")
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 	select {}
 }
 
 func tlscmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("tls")
+	vlog.Println("tls")
 	err := user.AttachSSLUprobe()
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 
 }
 
 func tcpcmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("tcp")
+	vlog.Println("tcp")
 	err := user.AttachTcpSendMsgKprobe()
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 
 }
 
 func httpcmdFunc(command *cobra.Command, args []string) {
-	fmt.Println("http")
+	vlog.Println("http")
 	err := user.AttachSocket()
 	if err != nil {
-		fmt.Println(err)
+		vlog.Println(err)
 	}
 
 }

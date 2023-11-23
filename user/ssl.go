@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,15 +19,17 @@ type SslDataEventT struct {
 	TimestampNs uint64
 	Pid         uint32
 	Tid         uint32
-	Data        [4000]byte
 	DataLen     int32
+	Data        [4000]byte
 	_           [4]byte
 }
 
 func AttachSSLUprobe() (err error) {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		vlog.Fatalf("loading objects: %v", err)
+	}
 	defer objs.Close()
 
 	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libssl.so.1.1")
@@ -44,8 +45,19 @@ func AttachSSLUprobe() (err error) {
 		vlog.Fatalf("creating uprobe: %s", err)
 	}
 
+	up3, err := ex.Uprobe("SSL_read", objs.UprobeSSL_read, nil)
+	if err != nil {
+		vlog.Fatalf("creating uprobe: %s", err)
+	}
+	up4, err := ex.Uretprobe("SSL_read", objs.UretprobeSSL_read, nil)
+	if err != nil {
+		vlog.Fatalf("creating uprobe: %s", err)
+	}
+
 	defer up1.Close()
 	defer up2.Close()
+	defer up3.Close()
+	defer up4.Close()
 
 	rd, err := perf.NewReader(objs.TlsEvents, os.Getpagesize())
 	if err != nil {
@@ -59,8 +71,8 @@ func AttachSSLUprobe() (err error) {
 			vlog.Fatalf("closing perf event reader: %s", err)
 		}
 	}()
-	fmt.Println("Tracing... Hit Ctrl-C to end.")
-	fmt.Printf("   %-12s  %-s\n", "EVENT", "TIME(ns)")
+	vlog.Println("Tracing... Hit Ctrl-C to end.")
+	vlog.Printf("   %-12s  %-s\n", "EVENT", "TIME(ns)")
 	var event SslDataEventT
 	for {
 		record, err := rd.Read()
@@ -80,7 +92,7 @@ func AttachSSLUprobe() (err error) {
 			continue
 		}
 
-		fmt.Printf("%d,%s\n", event.Pid, string(event.Data[:event.DataLen]))
+		vlog.Printf("%d,%s %d\n", event.Pid, string(event.Data[:]), event.DataLen)
 	}
 
 }

@@ -28,8 +28,8 @@ type bpfSslDataEventT struct {
 	TimestampNs uint64
 	Pid         uint32
 	Tid         uint32
-	Data        [4000]int8
 	DataLen     int32
+	Data        [4000]int8
 	_           [4]byte
 }
 
@@ -78,7 +78,9 @@ type bpfProgramSpecs struct {
 	KtcpSendmsg       *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
 	SocketHander      *ebpf.ProgramSpec `ebpf:"socket_hander"`
 	TcEgress          *ebpf.ProgramSpec `ebpf:"tc_egress"`
+	UprobeSSL_read    *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
 	UprobeSsL_write   *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
 	UretprobeSslWrite *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
 }
 
@@ -86,6 +88,7 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
+	ActiveSslReadArgsMap  *ebpf.MapSpec `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.MapSpec `ebpf:"active_ssl_write_args_map"`
 	DataBufferHeap        *ebpf.MapSpec `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.MapSpec `ebpf:"httpevent"`
@@ -115,6 +118,7 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
+	ActiveSslReadArgsMap  *ebpf.Map `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.Map `ebpf:"active_ssl_write_args_map"`
 	DataBufferHeap        *ebpf.Map `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.Map `ebpf:"httpevent"`
@@ -127,6 +131,7 @@ type bpfMaps struct {
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.ActiveSslReadArgsMap,
 		m.ActiveSslWriteArgsMap,
 		m.DataBufferHeap,
 		m.Httpevent,
@@ -146,7 +151,9 @@ type bpfPrograms struct {
 	KtcpSendmsg       *ebpf.Program `ebpf:"ktcp_sendmsg"`
 	SocketHander      *ebpf.Program `ebpf:"socket_hander"`
 	TcEgress          *ebpf.Program `ebpf:"tc_egress"`
+	UprobeSSL_read    *ebpf.Program `ebpf:"uprobe_SSL_read"`
 	UprobeSsL_write   *ebpf.Program `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read *ebpf.Program `ebpf:"uretprobe_SSL_read"`
 	UretprobeSslWrite *ebpf.Program `ebpf:"uretprobe_ssl_write"`
 }
 
@@ -156,7 +163,9 @@ func (p *bpfPrograms) Close() error {
 		p.KtcpSendmsg,
 		p.SocketHander,
 		p.TcEgress,
+		p.UprobeSSL_read,
 		p.UprobeSsL_write,
+		p.UretprobeSSL_read,
 		p.UretprobeSslWrite,
 	)
 }

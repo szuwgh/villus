@@ -37,10 +37,9 @@ type Ipv4KeyT struct {
 
 func AttachTcpSendMsgKprobe() (err error) {
 
-	// objs := bpfObjects{}
-	// if err := loadBpfObjects(&objs, nil); err != nil {
-	// 	vlog.Fatalf("loading objects: %v", err)
-	// }
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		vlog.Fatalf("loading objects: %v", err)
+	}
 	defer objs.Close()
 
 	kp, err := link.Kprobe(FN_TCP_SENDMSG, objs.KtcpSendmsg, nil)
@@ -67,48 +66,39 @@ func AttachTcpSendMsgKprobe() (err error) {
 		"Bytes",
 	)
 	for range ticker.C {
-		var values []uint32
+		var values1 []uint32
 		var key Ipv4KeyT
+
+		var values2 []uint32
 		// if err := objs.KprobeMap.Lookup(mapKey, &value); err != nil {
 		// 	vlog.Fatalf("reading map: %v", err)
 		// }
 		iter := objs.bpfMaps.Ipv4SendBytes.Iterate()
-		for iter.Next(&key, &values) {
-			var sum uint32
-			for _, n := range values {
-				sum += n
+		for iter.Next(&key, &values1) {
+			var sum1 uint32
+			for _, n := range values1 {
+				sum1 += n
 			}
 			saddr := key.Saddr
 			daddr := key.Daddr
 			vlog.Printf("%-15s -> %-15s  %-6d",
 				intToIP(saddr),
 				intToIP(daddr),
-				sum,
+				sum1,
 			)
-			key.Saddr = daddr
-			key.Daddr = saddr
-			objs.bpfMaps.Ipv4RecvBytes.Lookup(key, &values)
+			//key.Saddr = saddr
+			//key.Daddr = daddr
+			objs.bpfMaps.Ipv4RecvBytes.Lookup(key, &values2)
+			var sum2 uint32
+			for _, n := range values2 {
+				sum2 += n
+			}
 			vlog.Printf("%-15s <- %-15s  %-6d",
 				intToIP(daddr),
 				intToIP(saddr),
-				sum,
+				sum2,
 			)
 		}
-
-		// iter1 := objs.bpfMaps.Ipv4RecvBytes.Iterate()
-		// for iter1.Next(&key, &values) {
-		// 	var sum uint32
-		// 	for _, n := range values {
-		// 		sum += n
-		// 	}
-		// 	vlog.Printf("%-15s -> %-15s  %-6d",
-		// 		intToIP(key.Saddr),
-		// 		intToIP(key.Daddr),
-		// 		sum,
-		// 	)
-		// }
-
-		//vlog.Printf("%s called %d times\n", fn, value)
 	}
 	return nil
 }

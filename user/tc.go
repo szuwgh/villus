@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -47,7 +48,11 @@ const (
 	DirEgress  = "egress"
 
 	BpfFsPath = "/sys/fs/bpf/"
+
+	TC_DADDR_MAP = "tc_daddr_map"
 )
+
+const TC_DADDR_MAP_PATH = BpfFsPath + TC_DADDR_MAP
 
 func DirectionToParent(dir string) uint32 {
 	switch dir {
@@ -159,7 +164,7 @@ func InitTcQdisc(ifName string) (err error) {
 	qdisc.Defcls = 12
 	err = netlink.QdiscAdd(qdisc)
 	if err != nil {
-		fmt.Println("Failed to create qdisc:", err)
+		vlog.Println("Failed to create qdisc:", err)
 		return err
 	}
 	return
@@ -198,19 +203,60 @@ func AddTcClass(config TcClassConfig) (err error) {
 	return
 }
 
-func LsIp() (err error) {
-
-	m, err := ebpf.LoadPinnedMap("/sys/fs/bpf/tc_daddr_map", &ebpf.LoadPinOptions{})
+func DeleteIp(ip string) (err error) {
+	// 使用bpf.OpenMap打开eBPF map
+	m, err := ebpf.LoadPinnedMap(TC_DADDR_MAP_PATH, &ebpf.LoadPinOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open BPF map: %v\n", err)
 		return err
 	}
+	defer m.Close()
+	var i = inet.Ip2Int32(net.ParseIP(ip))
+	err = m.Delete(&i)
+	if err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func SearchClass(class uint32, classList []netlink.Class) netlink.Class {
+	i := sort.Search(len(classList), func(i int) bool {
+		if classList[i].Attrs().Handle == class {
+			return true
+		}
+		return false
+	})
+	return classList[i]
+}
+
+func LsIp() (err error) {
+	// link, err := netlink.LinkByName(ifName)
+	// if err != nil {
+	// 	return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	// }
+	m, err := ebpf.LoadPinnedMap(TC_DADDR_MAP_PATH, &ebpf.LoadPinOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open BPF map: %v\n", err)
+		return err
+	}
+	// classList, err := netlink.ClassList(link, qdisc)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get class: %s", err)
+	// }
 	iter := m.Iterate()
 	var ip uint32
 	var class uint32
 
 	for iter.Next(&ip, &class) {
+		//class := sort.Search(class, f func(int) bool)
+
+		// vlog.Printf("ip :%s class:%s(%d) rate:%s\n",
+		// 	intToIP(ip),
+		// 	class,
+		// 	netlink.HandleStr(v.Attrs().Handle),
+		// 	v.Attrs().Handle,
+		// 	v.Type())
 		vlog.Println(intToIP(ip), class)
 	}
 	return nil
@@ -219,7 +265,7 @@ func LsIp() (err error) {
 func AddIp(ip string, class uint32) (err error) {
 
 	// 使用bpf.OpenMap打开eBPF map
-	m, err := ebpf.LoadPinnedMap("/sys/fs/bpf/tc_daddr_map", &ebpf.LoadPinOptions{})
+	m, err := ebpf.LoadPinnedMap(TC_DADDR_MAP_PATH, &ebpf.LoadPinOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open BPF map: %v\n", err)
 		return err
@@ -228,10 +274,8 @@ func AddIp(ip string, class uint32) (err error) {
 	var i = inet.Ip2Int32(net.ParseIP(ip))
 	err = m.Put(&i, &class)
 	if err != nil {
-		//fmt.Fprintf(os.Stderr, "Error pinning eBPF Map: %v\n", err)
 		return err
 	}
-	//objs.TcDaddrMap.Pin(fileName string)
 
 	return nil
 }
@@ -257,7 +301,7 @@ func LsTcClass(ifName string, qdisc uint32) (err error) {
 				if !ok {
 					continue
 				}
-				fmt.Printf("class link index:%s(%d) parent:%s  handle:%s(%d) type:%s rate:%s\n",
+				vlog.Printf("class link index:%s(%d) parent:%s  handle:%s(%d) type:%s rate:%s\n",
 					link.Attrs().Name,
 					v.Attrs().LinkIndex,
 					netlink.HandleStr(v.Attrs().Parent),
@@ -287,7 +331,28 @@ func LsTcQdisc(ifName string) (err error) {
 		if err != nil {
 			return fmt.Errorf("getting interface %s by name: %w", ifName, err)
 		}
-		fmt.Printf("qdisc link index:%s(%d) handle:%s(%d) type:%s\n", link.Attrs().Name, v.Attrs().LinkIndex, netlink.HandleStr(v.Attrs().Handle), v.Attrs().Handle, v.Type())
+		vlog.Printf("qdisc link index:%s(%d) handle:%s(%d) type:%s\n", link.Attrs().Name, v.Attrs().LinkIndex, netlink.HandleStr(v.Attrs().Handle), v.Attrs().Handle, v.Type())
+	}
+	return
+}
+
+func LsTcBpf(ifName string, qdisc uint32) (err error) {
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
+
+	filterList, err := netlink.FilterList(link, qdisc)
+	if err != nil {
+		return fmt.Errorf("getting Qdisc %s by name: %w", ifName, err)
+	}
+	for _, v := range filterList {
+		link, err := netlink.LinkByIndex(v.Attrs().LinkIndex)
+		if err != nil {
+			return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+		}
+		vlog.Printf("filter link index:%s(%d) handle:%s(%d) type:%s\n", link.Attrs().Name, v.Attrs().LinkIndex, netlink.HandleStr(v.Attrs().Handle), v.Attrs().Handle, v.Type())
 	}
 	return
 }
@@ -348,7 +413,30 @@ func DeleteEbpfTc(ifName string, qdisc uint32) (err error) {
 
 	err = netlink.FilterDel(filter)
 	if err != nil {
-		fmt.Println("Failed to add filter:", err)
+		vlog.Println("Failed to del filter:", err)
+		return
+	}
+
+	return nil
+}
+
+func DeleteTcClass(ifName string, qdisc uint32, handle uint32) (err error) {
+	// 创建一个 netlink socket
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+	}
+
+	// 删除一个class
+	class := netlink.NewHtbClass(netlink.ClassAttrs{
+		LinkIndex: link.Attrs().Index,
+		Handle:    handle,
+		Parent:    qdisc,
+	}, netlink.HtbClassAttrs{})
+
+	err = netlink.ClassDel(class)
+	if err != nil {
+		vlog.Println("Failed to del class:", err)
 		return
 	}
 
@@ -369,16 +457,13 @@ func AttachEbpfTc(ifName string, qdisc uint32) (err error) {
 	}
 	defer objs.Close()
 
-	mapInfo, err := objs.TcDaddrMap.Info()
-	if err != nil {
-		return err
-	}
-	mapPath := BpfFsPath + mapInfo.Name
-	if !bpf.IsMapPinned(mapPath) {
-		err = objs.TcDaddrMap.Pin(mapPath)
+	if !bpf.IsMapPinned(TC_DADDR_MAP_PATH) {
+		err = objs.TcDaddrMap.Pin(TC_DADDR_MAP_PATH)
 		if err != nil {
 			return fmt.Errorf("failed to pin map %s", err)
 		}
+	} else {
+		return fmt.Errorf("failed to attach bpf map have to pin, try removing ebpf and then attach ebpf")
 	}
 
 	filter := &netlink.BpfFilter{
@@ -395,7 +480,7 @@ func AttachEbpfTc(ifName string, qdisc uint32) (err error) {
 
 	err = netlink.FilterReplace(filter)
 	if err != nil {
-		fmt.Println("Failed to add filter:", err)
+		vlog.Println("Failed to add filter:", err)
 		return
 	}
 
@@ -421,7 +506,7 @@ func ObserveTC(ifName string) (err error) {
 
 	err = netlink.QdiscAdd(qdisc)
 	if err != nil {
-		fmt.Println("Failed to create qdisc:", err)
+		vlog.Println("Failed to create qdisc:", err)
 		return err
 	}
 
@@ -436,10 +521,10 @@ func ObserveTC(ifName string) (err error) {
 
 	err = netlink.ClassAdd(class)
 	if err != nil {
-		fmt.Println("Failed to create class:", err)
+		vlog.Println("Failed to create class:", err)
 		return err
 	}
-	fmt.Printf("%x\n", class.Handle)
+	vlog.Printf("%x\n", class.Handle)
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
 		vlog.Fatalf("loading objects: %v", err)
@@ -473,7 +558,7 @@ func ObserveTC(ifName string) (err error) {
 	filter.Sel.Flags |= netlink.TC_U32_TERMINAL
 	err = netlink.FilterReplace(filter)
 	if err != nil {
-		fmt.Println("Failed to add filter:", err)
+		vlog.Println("Failed to add filter:", err)
 		return
 	}
 
@@ -491,22 +576,22 @@ func ListFilters(ifName string) error {
 		return err
 	}
 
-	fmt.Println(qdiscList)
-	fmt.Println("-----")
+	vlog.Println(qdiscList)
+	vlog.Println("-----")
 
 	classList, err := netlink.ClassList(link, netlink.MakeHandle(0x1, 0x0))
 	if err != nil {
 		return err
 	}
-	fmt.Println(classList)
-	fmt.Println("-----")
+	vlog.Println(classList)
+	vlog.Println("-----")
 
 	filters, err := netlink.FilterList(link, netlink.MakeHandle(0x1, 0x5))
 	if err != nil {
 		return err
 	}
-	fmt.Println("------------")
-	fmt.Println(filters)
+	vlog.Println("------------")
+	vlog.Println(filters)
 
 	return nil
 }
@@ -522,7 +607,7 @@ func RemoveTCFilters(ifName string, tcDir uint32) error {
 		return err
 	}
 
-	fmt.Println(qdiscList)
+	vlog.Println(qdiscList)
 	for _, f := range qdiscList {
 		if f.Attrs().Handle != netlink.MakeHandle(0x10, 0x0) || f.Attrs().Handle != netlink.MakeHandle(0x11, 0x1) {
 			continue

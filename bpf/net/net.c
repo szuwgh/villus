@@ -183,9 +183,8 @@ int socket_hander(struct __sk_buff *skb)
 }
 
 /***********************************************************
- * tc限流 嗅探相关
+ * tc限流
  ***********************************************************/
-
 struct
 {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -208,8 +207,6 @@ unsigned int tc_egress(struct __sk_buff *skb)
     {
         return TC_ACT_OK;
     }
-    // struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-    // unsigned long long daddr = load_word(skb, ETH_HLEN + offsetof(struct iphdr, daddr));
     u32 daddr;
     bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr), &daddr, 4);
 
@@ -220,11 +217,6 @@ unsigned int tc_egress(struct __sk_buff *skb)
         bpf_printk("daddr:%d,valp:%d", daddr, *valp);
         return *valp;
     }
-    // uint16_t dstPortNumber = __bpf_ntohs(tcph->dest);
-    //  if (dstPortNumber != 5201)
-    //      return TC_ACT_OK;
-    // if (daddr != 0xac120515) //  172.18.5.21
-    //     return TC_ACT_OK;
 
     return TC_ACT_OK;
 }
@@ -253,8 +245,8 @@ struct ssl_data_event_t
     uint64_t timestamp_ns;
     uint32_t pid;
     uint32_t tid;
-    char data[MAX_DATA_SIZE];
     int32_t data_len;
+    char data[MAX_DATA_SIZE];
 };
 
 struct
@@ -303,21 +295,20 @@ static int process_ssl_data(struct pt_regs *ctx, uint64_t id, enum ssl_data_even
     }
 
     event->type = type;
-    // This is a max function, but it is written in such a way to keep older BPF verifiers happy.
     event->data_len = (len < MAX_DATA_SIZE ? (len & (MAX_DATA_SIZE - 1)) : MAX_DATA_SIZE);
-    bpf_probe_read(event->data, event->data_len, buf);
+    bpf_probe_read_user(event->data, event->data_len, buf);
     bpf_perf_event_output(ctx, &tls_events, BPF_F_CURRENT_CPU, event, sizeof(struct ssl_data_event_t));
     return 0;
 }
 
-//
+// int SSL_write(SSL *ssl, const void *buf, int num);
 SEC("uprobe/SSL_write")
 int uprobe_ssL_write(struct pt_regs *ctx)
 {
     uint64_t current_pid_tgid = bpf_get_current_pid_tgid();
     //  uint32_t pid = current_pid_tgid >> 32;
 
-    const char *buf = (const char *)(ctx)->si;
+    const char *buf = (const char *)PT_REGS_PARM2(ctx); //(const char *)(ctx)->si;
     bpf_map_update_elem(&active_ssl_write_args_map, &current_pid_tgid, &buf, BPF_ANY);
     return 0;
 }
@@ -335,6 +326,40 @@ int uretprobe_ssl_write(struct pt_regs *ctx)
     }
 
     bpf_map_delete_elem(&active_ssl_write_args_map, &current_pid_tgid);
+    return 0;
+}
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, const char *);
+    __uint(max_entries, 1024);
+} active_ssl_read_args_map SEC(".maps");
+
+SEC("uprobe/SSL_read")
+int uprobe_SSL_read(struct pt_regs *ctx)
+{
+    uint64_t current_pid_tgid = bpf_get_current_pid_tgid();
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx); //(const char *)(ctx)->si;
+    bpf_map_update_elem(&active_ssl_read_args_map, &current_pid_tgid, &buf, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/SSL_read")
+int uretprobe_SSL_read(struct pt_regs *ctx)
+{
+    uint64_t current_pid_tgid = bpf_get_current_pid_tgid();
+
+    const char **buf = bpf_map_lookup_elem(&active_ssl_read_args_map, &current_pid_tgid);
+    if (buf != NULL)
+    {
+        process_ssl_data(ctx, current_pid_tgid, kSSLRead, *buf);
+    }
+
+    bpf_map_delete_elem(&active_ssl_read_args_map, &current_pid_tgid);
+
     return 0;
 }
 
@@ -366,8 +391,6 @@ int ktcp_sendmsg(struct pt_regs *ctx)
     {
         return 0;
     }
-    // u32 pid = bpf_get_current_pid_tgid() >> 32;
-    // FILTER_PID
 
     u16 family, lport, dport;
     u32 src_ip4, dst_ip4;
@@ -385,9 +408,6 @@ int ktcp_sendmsg(struct pt_regs *ctx)
     struct ipv4_key_t ipv4_key = {};
     ipv4_key.saddr = src_ip4;
     ipv4_key.daddr = dst_ip4;
-    //  ipv4_key.lport = lport;
-    //  ipv4_key.dport = __bpf_ntohs(dport);
-
     if (src_ip4 == dst_ip4)
     {
         return 0;
